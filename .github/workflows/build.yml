@@ -37,21 +37,21 @@ jobs:
 
       - name: Pre-download freetype & harfbuzz (savannah/freedesktop are down)
         run: |
-          # freetype: savannah.gnu.org 持续 502, 用 sourceforge 镜像
-          mkdir -p ~/.buildozer/android/packages/freetype
+          # p4a 的包缓存目录在 storage-dir/packages 下（与 buildozer 的 ~/.buildozer 无关）
+          PKG_DIR="$GITHUB_WORKSPACE/.buildozer/android/platform/build-arm64-v8a/packages"
+          mkdir -p "$PKG_DIR/freetype"
           curl -L --retry 8 --retry-delay 3 --retry-all-errors \
-            -o ~/.buildozer/android/packages/freetype/freetype-2.14.1.tar.gz \
+            -o "$PKG_DIR/freetype/freetype-2.14.1.tar.gz" \
             "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.1/freetype-2.14.1.tar.gz"
-          touch ~/.buildozer/android/packages/freetype/.mark-freetype-2.14.1.tar.gz
-          # harfbuzz: freedesktop.org 挂了, 用 GitHub Release 的官方 tar.xz
-          mkdir -p ~/.buildozer/android/packages/harfbuzz
+          touch "$PKG_DIR/freetype/.mark-freetype-2.14.1.tar.gz"
+          mkdir -p "$PKG_DIR/harfbuzz"
           curl -L --retry 8 --retry-delay 3 --retry-all-errors \
-            -o ~/.buildozer/android/packages/harfbuzz/harfbuzz-2.6.4.tar.xz \
+            -o "$PKG_DIR/harfbuzz/harfbuzz-2.6.4.tar.xz" \
             "https://github.com/harfbuzz/harfbuzz/releases/download/2.6.4/harfbuzz-2.6.4.tar.xz"
-          touch ~/.buildozer/android/packages/harfbuzz/.mark-harfbuzz-2.6.4.tar.xz
-          ls -la ~/.buildozer/android/packages/freetype/ ~/.buildozer/android/packages/harfbuzz/
-          tar -tzf ~/.buildozer/android/packages/freetype/freetype-2.14.1.tar.gz | head -1
-          tar -tJf ~/.buildozer/android/packages/harfbuzz/harfbuzz-2.6.4.tar.xz | head -1
+          touch "$PKG_DIR/harfbuzz/.mark-harfbuzz-2.6.4.tar.xz"
+          ls -la "$PKG_DIR/freetype/" "$PKG_DIR/harfbuzz/"
+          tar -tzf "$PKG_DIR/freetype/freetype-2.14.1.tar.gz" | head -1
+          tar -tJf "$PKG_DIR/harfbuzz/harfbuzz-2.6.4.tar.xz" | head -1
 
       - name: Build APK
         env:
