@@ -36,6 +36,9 @@ jobs:
           pip install buildozer cython
 
       - name: Build APK
+        env:
+          PIP_DEFAULT_TIMEOUT: 60
+          PIP_RETRIES: 10
         run: |
           yes | buildozer -v android debug
 
