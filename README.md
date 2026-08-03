@@ -5,7 +5,8 @@
 ## 功能
 - 图片 → PDF（多图可合并为一个PDF）
 - 图片 → PNG / JPG
-- PDF → 图片（每页转一张JPG）
+
+> 注：PDF → 图片 因 PyMuPDF 无 Android 预编译包暂不支持
 
 ## 打包方式（云端 CI）
 1. 把本目录推送到 GitHub 仓库

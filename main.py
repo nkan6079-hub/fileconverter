@@ -78,7 +78,7 @@ class ConverterApp(App):
         opt_row.add_widget(Label(text='转换类型', font_size='14sp'))
         self.conv_type = Spinner(
             text='图片 → PDF',
-            values=['图片 → PDF', '图片 → PNG', '图片 → JPG', 'PDF → 图片'],
+            values=['图片 → PDF', '图片 → PNG', '图片 → JPG'],
             font_size='14sp', size_hint_x=1.4
         )
         opt_row.add_widget(self.conv_type)
@@ -175,17 +175,6 @@ class ConverterApp(App):
                 name = Path(f).stem + '.' + ext
                 img.save(out_dir / name, fmt)
                 results.append(str(out_dir / name))
-
-        elif conv == 'PDF → 图片':
-            import fitz
-            for f in self.selected_files:
-                doc = fitz.open(f)
-                for i in range(doc.page_count):
-                    pix = doc[i].get_pixmap(dpi=150)
-                    name = f'{Path(f).stem}_p{i + 1}.jpg'
-                    pix.save(str(out_dir / name))
-                    results.append(str(out_dir / name))
-                doc.close()
 
         return results
 
