@@ -7,33 +7,102 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.core.text import LabelBase
 
 from PIL import Image
 from pathlib import Path
 import threading
+import io
+import os
+
+# ---- 中文显示：用系统中文字体覆盖 Kivy 默认 Roboto ----
+_CJK_FONTS = [
+    '/system/fonts/NotoSansCJKsc-Regular.otf',
+    '/system/fonts/NotoSansCJK-Regular.ttc',
+    '/system/fonts/DroidSansFallback.ttf',
+    '/system/fonts/DroidSansFallbackFull.ttf',
+]
+for _f in _CJK_FONTS:
+    if os.path.exists(_f):
+        try:
+            LabelBase.register(name='Roboto', fn_regular=_f)
+            break
+        except Exception:
+            continue
 
 try:
-    from plyer import storagepath
     from plyer import filechooser
     HAS_PLYER = True
 except Exception:
     HAS_PLYER = False
 
-OUTPUT_DIR = None
+OUTPUT_DESC = '下载文件夹 (Download)'
 
 
 def get_output_dir():
-    global OUTPUT_DIR
-    if OUTPUT_DIR:
-        return OUTPUT_DIR
-    if HAS_PLYER:
+    return OUTPUT_DESC
+
+
+def is_android():
+    try:
+        import jnius
+        return True
+    except Exception:
+        return False
+
+
+def sdk_int():
+    try:
+        from jnius import autoclass
+        Build = autoclass('android.os.Build$VERSION')
+        return int(Build.SDK_INT)
+    except Exception:
+        return 0
+
+
+def save_to_downloads(filename, mime, data):
+    """写入公共下载目录，返回显示路径或文件名。"""
+    if is_android():
         try:
-            OUTPUT_DIR = storagepath.downloads_dir()
-            return OUTPUT_DIR
+            if sdk_int() >= 29:
+                return _save_mediastore(filename, mime, data)
+            return _save_legacy(filename, data)
         except Exception:
-            pass
-    OUTPUT_DIR = str(Path.home())
-    return OUTPUT_DIR
+            try:
+                return _save_legacy(filename, data)
+            except Exception:
+                raise
+    # 非 Android：写桌面
+    out = Path.home() / 'Desktop'
+    out.mkdir(parents=True, exist_ok=True)
+    (out / filename).write_bytes(data)
+    return str(out / filename)
+
+
+def _save_mediastore(filename, mime, data):
+    from jnius import autoclass
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    MediaStore = autoclass('android.provider.MediaStore')
+    ContentValues = autoclass('android.content.ContentValues')
+    activity = PythonActivity.mActivity
+    resolver = activity.getContentResolver()
+    values = ContentValues()
+    values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
+    values.put(MediaStore.Downloads.MIME_TYPE, mime)
+    uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+    out = resolver.openOutputStream(uri)
+    out.write(data)
+    out.close()
+    return filename
+
+
+def _save_legacy(filename, data):
+    d = '/storage/emulated/0/Download'
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, filename)
+    with open(path, 'wb') as f:
+        f.write(data)
+    return path
 
 
 class ConverterApp(App):
@@ -92,7 +161,7 @@ class ConverterApp(App):
         root.add_widget(convert_btn)
 
         self.out_dir_label = Label(
-            text=f'输出目录: {get_output_dir()}', font_size='11sp',
+            text=f'输出到: {get_output_dir()}', font_size='11sp',
             color=(0.6, 0.6, 0.65, 1), size_hint_y=None, height='24dp'
         )
         root.add_widget(self.out_dir_label)
@@ -147,8 +216,6 @@ class ConverterApp(App):
             Clock.schedule_once(lambda dt, err=str(e): self._on_error(err))
 
     def _run_conversion(self, conv):
-        out_dir = Path(get_output_dir())
-        out_dir.mkdir(parents=True, exist_ok=True)
         results = []
 
         if conv == '图片 → PDF':
@@ -158,23 +225,26 @@ class ConverterApp(App):
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 images.append(img)
+            buf = io.BytesIO()
             if len(images) == 1:
                 name = Path(self.selected_files[0]).stem + '.pdf'
-                images[0].save(out_dir / name, 'PDF', resolution=100.0)
+                images[0].save(buf, 'PDF', resolution=100.0)
             else:
                 name = '合并图片.pdf'
-                images[0].save(out_dir / name, 'PDF', save_all=True,
+                images[0].save(buf, 'PDF', save_all=True,
                                append_images=images[1:], resolution=100.0)
-            results.append(str(out_dir / name))
+            results.append(save_to_downloads(name, 'application/pdf', buf.getvalue()))
 
         elif conv in ('图片 → PNG', '图片 → JPG'):
             fmt = 'PNG' if conv.endswith('PNG') else 'JPEG'
             ext = 'png' if fmt == 'PNG' else 'jpg'
+            mime = 'image/png' if fmt == 'PNG' else 'image/jpeg'
             for f in self.selected_files:
                 img = Image.open(f)
                 name = Path(f).stem + '.' + ext
-                img.save(out_dir / name, fmt)
-                results.append(str(out_dir / name))
+                buf = io.BytesIO()
+                img.save(buf, fmt)
+                results.append(save_to_downloads(name, mime, buf.getvalue()))
 
         return results
 
@@ -183,7 +253,7 @@ class ConverterApp(App):
         detail = '\n'.join(Path(p).name for p in results[:10])
         if len(results) > 10:
             detail += f'\n... 共 {len(results)} 个'
-        self.show_popup('转换完成', f'输出到:\n{get_output_dir()}\n\n{detail}')
+        self.show_popup('转换完成', f'已保存到下载文件夹:\n\n{detail}')
 
     def _on_error(self, err):
         self.status.text = '转换失败'
