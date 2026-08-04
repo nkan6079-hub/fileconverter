@@ -129,11 +129,11 @@ class ConverterApp(App):
 
         root = BoxLayout(orientation='vertical', padding=12, spacing=10)
 
-        self.title = Label(
+        self.title_label = Label(
             text='[b]万能格式转换器[/b]',
             markup=True, font_size='22sp', size_hint_y=None, height='48dp'
         )
-        root.add_widget(self.title)
+        root.add_widget(self.title_label)
 
         self.status = Label(
             text='请选择文件', font_size='15sp',
@@ -191,22 +191,21 @@ class ConverterApp(App):
         return root
 
     def _intro_animation(self, root):
-        """开场动画：标题下落+淡入，控件依次浮现。"""
-        for i, child in enumerate(root.children):
+        """开场动画：控件淡入（仅用 opacity，所有 Kivy 版本安全）。"""
+        children = list(root.children)
+        for i, child in enumerate(children):
             child.opacity = 0
-            child.y -= 30 * (i + 1)
-            anim = Animation(opacity=1, y=child.y + 30 * (i + 1),
-                             duration=0.35, t='out_quad')
+            anim = Animation(opacity=1, duration=0.3, t='out_quad')
             anim.start(child)
 
     def _press_anim(self, btn):
-        Animation.cancel_all(btn, 'scale', 'opacity')
-        anim = Animation(scale=0.94, opacity=0.85, duration=0.06, t='out_quad')
+        Animation.cancel_all(btn, 'opacity')
+        anim = Animation(opacity=0.6, duration=0.06)
         anim.start(btn)
 
     def _release_anim(self, btn):
-        Animation.cancel_all(btn, 'scale', 'opacity')
-        anim = Animation(scale=1.0, opacity=1.0, duration=0.12, t='out_back')
+        Animation.cancel_all(btn, 'opacity')
+        anim = Animation(opacity=1.0, duration=0.15, t='out_quad')
         anim.start(btn)
 
     def pick_files(self, instance):
@@ -257,14 +256,20 @@ class ConverterApp(App):
         t.start()
 
     def _start_loading(self):
-        """转换按钮转圈动画。"""
-        anim = Animation(rotation=360, duration=0.6) + Animation(rotation=0, duration=0)
-        anim.repeat = True
-        anim.start(self.convert_btn)
+        """加载中：按钮文字闪烁（仅 opacity/文字，全版本安全）。"""
+        self._loading_frames = ['转换中', '转换中.', '转换中..', '转换中...']
+        self._loading_idx = 0
+        self._loading_ev = Clock.schedule_interval(self._tick_loading, 0.3)
+
+    def _tick_loading(self, dt):
+        self._loading_idx = (self._loading_idx + 1) % len(self._loading_frames)
+        self.convert_btn.text = self._loading_frames[self._loading_idx]
 
     def _stop_loading(self):
-        Animation.cancel_all(self.convert_btn, 'rotation')
-        self.convert_btn.rotation = 0
+        if getattr(self, '_loading_ev', None):
+            self._loading_ev.cancel()
+            self._loading_ev = None
+        self.convert_btn.text = '开始转换'
 
     def _convert_worker(self, conv):
         try:
@@ -328,9 +333,10 @@ class ConverterApp(App):
         self._stop_loading()
         self.status.text = f'完成! 生成 {len(results)} 个文件'
         self.status.color = (0.1, 0.9, 0.4, 1)
-        anim = (Animation(color=(1, 1, 1, 1), duration=0.3) +
-                Animation(color=(0.1, 0.9, 0.4, 1), duration=0.3)) * 3
-        anim.start(self.status)
+        for _ in range(3):
+            anim = (Animation(color=(1, 1, 1, 1), duration=0.3) +
+                    Animation(color=(0.1, 0.9, 0.4, 1), duration=0.3))
+            anim.start(self.status)
         detail = '\n'.join(Path(p).name for p in results[:10])
         if len(results) > 10:
             detail += f'\n... 共 {len(results)} 个'
