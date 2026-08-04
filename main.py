@@ -8,6 +8,8 @@ from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.core.text import LabelBase
+from kivy.animation import Animation
+from kivy.utils import get_color_from_hex
 
 from PIL import Image, ImageOps
 from pathlib import Path
@@ -127,10 +129,11 @@ class ConverterApp(App):
 
         root = BoxLayout(orientation='vertical', padding=12, spacing=10)
 
-        root.add_widget(Label(
+        self.title = Label(
             text='[b]万能格式转换器[/b]',
             markup=True, font_size='22sp', size_hint_y=None, height='48dp'
-        ))
+        )
+        root.add_widget(self.title)
 
         self.status = Label(
             text='请选择文件', font_size='15sp',
@@ -142,10 +145,12 @@ class ConverterApp(App):
         pick_btn = Button(text='选择文件/图片', font_size='15sp',
                           background_color=(0.15, 0.45, 0.95, 1))
         pick_btn.bind(on_release=self.pick_files)
+        pick_btn.bind(on_press=self._press_anim, on_release=self._release_anim)
         file_btn_row.add_widget(pick_btn)
         clear_btn = Button(text='清空', font_size='15sp',
                            background_color=(0.4, 0.4, 0.42, 1))
         clear_btn.bind(on_release=self.clear_files)
+        clear_btn.bind(on_press=self._press_anim, on_release=self._release_anim)
         file_btn_row.add_widget(clear_btn)
         root.add_widget(file_btn_row)
 
@@ -173,6 +178,7 @@ class ConverterApp(App):
             background_color=(0.1, 0.75, 0.4, 1)
         )
         self.convert_btn.bind(on_release=self.do_convert)
+        self.convert_btn.bind(on_press=self._press_anim, on_release=self._release_anim)
         root.add_widget(self.convert_btn)
 
         self.out_dir_label = Label(
@@ -181,7 +187,27 @@ class ConverterApp(App):
         )
         root.add_widget(self.out_dir_label)
 
+        self._intro_animation(root)
         return root
+
+    def _intro_animation(self, root):
+        """开场动画：标题下落+淡入，控件依次浮现。"""
+        for i, child in enumerate(root.children):
+            child.opacity = 0
+            child.y -= 30 * (i + 1)
+            anim = Animation(opacity=1, y=child.y + 30 * (i + 1),
+                             duration=0.35, t='out_quad')
+            anim.start(child)
+
+    def _press_anim(self, btn):
+        Animation.cancel_all(btn, 'scale', 'opacity')
+        anim = Animation(scale=0.94, opacity=0.85, duration=0.06, t='out_quad')
+        anim.start(btn)
+
+    def _release_anim(self, btn):
+        Animation.cancel_all(btn, 'scale', 'opacity')
+        anim = Animation(scale=1.0, opacity=1.0, duration=0.12, t='out_back')
+        anim.start(btn)
 
     def pick_files(self, instance):
         if HAS_PLYER:
@@ -226,8 +252,19 @@ class ConverterApp(App):
         self.convert_btn.disabled = True
         conv = self.conv_type.text
         self.status.text = '转换中...'
+        self._start_loading()
         t = threading.Thread(target=self._convert_worker, args=(conv,), daemon=True)
         t.start()
+
+    def _start_loading(self):
+        """转换按钮转圈动画。"""
+        anim = Animation(rotation=360, duration=0.6) + Animation(rotation=0, duration=0)
+        anim.repeat = True
+        anim.start(self.convert_btn)
+
+    def _stop_loading(self):
+        Animation.cancel_all(self.convert_btn, 'rotation')
+        self.convert_btn.rotation = 0
 
     def _convert_worker(self, conv):
         try:
@@ -288,7 +325,12 @@ class ConverterApp(App):
     def _on_done(self, results):
         self._busy = False
         self.convert_btn.disabled = False
+        self._stop_loading()
         self.status.text = f'完成! 生成 {len(results)} 个文件'
+        self.status.color = (0.1, 0.9, 0.4, 1)
+        anim = (Animation(color=(1, 1, 1, 1), duration=0.3) +
+                Animation(color=(0.1, 0.9, 0.4, 1), duration=0.3)) * 3
+        anim.start(self.status)
         detail = '\n'.join(Path(p).name for p in results[:10])
         if len(results) > 10:
             detail += f'\n... 共 {len(results)} 个'
@@ -297,7 +339,11 @@ class ConverterApp(App):
     def _on_error(self):
         self._busy = False
         self.convert_btn.disabled = False
+        self._stop_loading()
         self.status.text = '转换失败'
+        self.status.color = (1, 0.3, 0.3, 1)
+        anim = Animation(color=(1, 1, 1, 1), duration=0.4, t='out_bounce')
+        anim.start(self.status)
         self.show_popup('错误', '转换失败，请检查所选文件是否为有效的图片文件')
 
     def show_popup(self, title, content):
