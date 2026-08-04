@@ -9,20 +9,20 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.core.text import LabelBase
 
-from PIL import Image
+from PIL import Image, ImageOps
 from pathlib import Path
 import threading
 import io
 import os
 
-# ---- 中文显示：用系统中文字体覆盖 Kivy 默认 Roboto ----
-_CJK_FONTS = [
-    '/system/fonts/NotoSansCJKsc-Regular.otf',
-    '/system/fonts/NotoSansCJK-Regular.ttc',
+# ---- 中文字体：优先用打包字体（不依赖设备 ROM），系统字体兜底 ----
+_BUNDLED_FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'DroidSansFallbackFull.ttf')
+_CJK_FALLBACKS = [
+    _BUNDLED_FONT,
     '/system/fonts/DroidSansFallback.ttf',
-    '/system/fonts/DroidSansFallbackFull.ttf',
+    '/system/fonts/NotoSansCJKsc-Regular.otf',
 ]
-for _f in _CJK_FONTS:
+for _f in _CJK_FALLBACKS:
     if os.path.exists(_f):
         try:
             LabelBase.register(name='Roboto', fn_regular=_f)
@@ -39,11 +39,24 @@ except Exception:
 OUTPUT_DESC = '下载文件夹 (Download)'
 
 
+def request_storage_permission():
+    """Android 6-9 (API 24-28) 需要运行时请求写权限；API 29+ 走 MediaStore 不需要。"""
+    if not _is_android():
+        return
+    if _sdk_int() >= 29:
+        return
+    try:
+        from plyer import permissions
+        permissions.request_permissions(['android.permission.WRITE_EXTERNAL_STORAGE'])
+    except Exception:
+        pass
+
+
 def get_output_dir():
     return OUTPUT_DESC
 
 
-def is_android():
+def _is_android():
     try:
         import jnius
         return True
@@ -51,7 +64,7 @@ def is_android():
         return False
 
 
-def sdk_int():
+def _sdk_int():
     try:
         from jnius import autoclass
         Build = autoclass('android.os.Build$VERSION')
@@ -61,18 +74,13 @@ def sdk_int():
 
 
 def save_to_downloads(filename, mime, data):
-    """写入公共下载目录，返回显示路径或文件名。"""
-    if is_android():
-        try:
-            if sdk_int() >= 29:
-                return _save_mediastore(filename, mime, data)
-            return _save_legacy(filename, data)
-        except Exception:
-            try:
-                return _save_legacy(filename, data)
-            except Exception:
-                raise
-    # 非 Android：写桌面
+    """写入公共下载目录，返回文件名。"""
+    if _is_android():
+        if _sdk_int() >= 29:
+            _save_mediastore(filename, mime, data)
+        else:
+            _save_legacy(filename, data)
+        return filename
     out = Path.home() / 'Desktop'
     out.mkdir(parents=True, exist_ok=True)
     (out / filename).write_bytes(data)
@@ -90,10 +98,15 @@ def _save_mediastore(filename, mime, data):
     values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
     values.put(MediaStore.Downloads.MIME_TYPE, mime)
     uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+    if uri is None:
+        raise IOError('无法创建下载文件（存储空间可能已满）')
     out = resolver.openOutputStream(uri)
-    out.write(data)
-    out.close()
-    return filename
+    if out is None:
+        raise IOError('无法写入下载文件夹')
+    try:
+        out.write(data)
+    finally:
+        out.close()
 
 
 def _save_legacy(filename, data):
@@ -109,6 +122,8 @@ class ConverterApp(App):
     def build(self):
         Window.clearcolor = (0.12, 0.12, 0.14, 1)
         self.selected_files = []
+        self._busy = False
+        request_storage_permission()
 
         root = BoxLayout(orientation='vertical', padding=12, spacing=10)
 
@@ -153,12 +168,12 @@ class ConverterApp(App):
         opt_row.add_widget(self.conv_type)
         root.add_widget(opt_row)
 
-        convert_btn = Button(
+        self.convert_btn = Button(
             text='开始转换', font_size='17sp', size_hint_y=None, height='56dp',
             background_color=(0.1, 0.75, 0.4, 1)
         )
-        convert_btn.bind(on_release=self.do_convert)
-        root.add_widget(convert_btn)
+        self.convert_btn.bind(on_release=self.do_convert)
+        root.add_widget(self.convert_btn)
 
         self.out_dir_label = Label(
             text=f'输出到: {get_output_dir()}', font_size='11sp',
@@ -184,6 +199,8 @@ class ConverterApp(App):
         self.refresh_list()
 
     def clear_files(self, instance):
+        if self._busy:
+            return
         self.selected_files = []
         self.refresh_list()
 
@@ -200,9 +217,13 @@ class ConverterApp(App):
         self.status.text = f'已选 {len(self.selected_files)} 个文件'
 
     def do_convert(self, instance):
+        if self._busy:
+            return
         if not self.selected_files:
             self.show_popup('提示', '请先选择文件')
             return
+        self._busy = True
+        self.convert_btn.disabled = True
         conv = self.conv_type.text
         self.status.text = '转换中...'
         t = threading.Thread(target=self._convert_worker, args=(conv,), daemon=True)
@@ -213,51 +234,71 @@ class ConverterApp(App):
             results = self._run_conversion(conv)
             Clock.schedule_once(lambda dt: self._on_done(results))
         except Exception as e:
-            Clock.schedule_once(lambda dt, err=str(e): self._on_error(err))
+            print(f'[FileConverter] 转换失败: {e}', flush=True)
+            Clock.schedule_once(lambda dt: self._on_error())
+
+    def _load_image(self, path):
+        """打开图片并应用 EXIF 拍摄方向。"""
+        img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
+        return img
 
     def _run_conversion(self, conv):
         results = []
 
         if conv == '图片 → PDF':
             images = []
-            for f in self.selected_files:
-                img = Image.open(f)
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                images.append(img)
-            buf = io.BytesIO()
-            if len(images) == 1:
-                name = Path(self.selected_files[0]).stem + '.pdf'
-                images[0].save(buf, 'PDF', resolution=100.0)
-            else:
-                name = '合并图片.pdf'
-                images[0].save(buf, 'PDF', save_all=True,
-                               append_images=images[1:], resolution=100.0)
-            results.append(save_to_downloads(name, 'application/pdf', buf.getvalue()))
+            try:
+                for f in self.selected_files:
+                    img = self._load_image(f)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    images.append(img)
+                buf = io.BytesIO()
+                if len(images) == 1:
+                    name = Path(self.selected_files[0]).stem + '.pdf'
+                    images[0].save(buf, 'PDF', resolution=100.0)
+                else:
+                    name = '合并图片.pdf'
+                    images[0].save(buf, 'PDF', save_all=True,
+                                   append_images=images[1:], resolution=100.0)
+                results.append(save_to_downloads(name, 'application/pdf', buf.getvalue()))
+            finally:
+                for img in images:
+                    img.close()
 
         elif conv in ('图片 → PNG', '图片 → JPG'):
             fmt = 'PNG' if conv.endswith('PNG') else 'JPEG'
             ext = 'png' if fmt == 'PNG' else 'jpg'
             mime = 'image/png' if fmt == 'PNG' else 'image/jpeg'
             for f in self.selected_files:
-                img = Image.open(f)
-                name = Path(f).stem + '.' + ext
-                buf = io.BytesIO()
-                img.save(buf, fmt)
-                results.append(save_to_downloads(name, mime, buf.getvalue()))
+                img = None
+                try:
+                    img = self._load_image(f)
+                    name = Path(f).stem + '.' + ext
+                    buf = io.BytesIO()
+                    img.save(buf, fmt)
+                    results.append(save_to_downloads(name, mime, buf.getvalue()))
+                finally:
+                    if img is not None:
+                        img.close()
 
         return results
 
     def _on_done(self, results):
+        self._busy = False
+        self.convert_btn.disabled = False
         self.status.text = f'完成! 生成 {len(results)} 个文件'
         detail = '\n'.join(Path(p).name for p in results[:10])
         if len(results) > 10:
             detail += f'\n... 共 {len(results)} 个'
         self.show_popup('转换完成', f'已保存到下载文件夹:\n\n{detail}')
 
-    def _on_error(self, err):
+    def _on_error(self):
+        self._busy = False
+        self.convert_btn.disabled = False
         self.status.text = '转换失败'
-        self.show_popup('错误', str(err))
+        self.show_popup('错误', '转换失败，请检查所选文件是否为有效的图片文件')
 
     def show_popup(self, title, content):
         box = BoxLayout(orientation='vertical', padding=12, spacing=8)
